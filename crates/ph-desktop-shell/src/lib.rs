@@ -78,18 +78,14 @@ fn bundled_stack(resource_dir: &Path) -> Option<Supervised> {
         // window port come from the staged manifest. Tiny file of our own
         // making — a dependency-free scan beats pulling in serde_json.
         if let Ok(manifest) = std::fs::read_to_string(stack.join("shell.json")) {
-            if let Some(port) = manifest
-                .split("\"connectPort\"")
-                .nth(1)
-                .and_then(|rest| {
-                    rest.chars()
-                        .skip_while(|c| !c.is_ascii_digit())
-                        .take_while(|c| c.is_ascii_digit())
-                        .collect::<String>()
-                        .parse::<u16>()
-                        .ok()
-                })
-            {
+            if let Some(port) = manifest.split("\"connectPort\"").nth(1).and_then(|rest| {
+                rest.chars()
+                    .skip_while(|c| !c.is_ascii_digit())
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse::<u16>()
+                    .ok()
+            }) {
                 std::env::set_var("PH_WIN_CONNECT_PORT", port.to_string());
             }
         }
@@ -110,7 +106,9 @@ fn supervised_mode() -> Supervised {
             cli: PathBuf::from(cli),
         },
         (Some(_), None) => {
-            diag::log("PH_RUN_PROJECT is set but PH_RUN_CLI is not; staying on the bundled sidecar");
+            diag::log(
+                "PH_RUN_PROJECT is set but PH_RUN_CLI is not; staying on the bundled sidecar",
+            );
             Supervised::Legacy
         }
         _ => Supervised::Legacy,
@@ -317,7 +315,7 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
                     std::env::set_var("FEATURE_UNIFORM_RUNNERS_ENABLED", "1");
                     std::env::set_var(
                         "PH_USER_DATA_DIR",
-                        plain_path(&data_dir.parent().unwrap_or(&data_dir).to_path_buf()),
+                        plain_path(data_dir.parent().unwrap_or(&data_dir)),
                     );
                     diag::log(format!("run project    : {}", plain_path(project)));
                     diag::log(format!("ph-cli         : {}", plain_path(cli)));

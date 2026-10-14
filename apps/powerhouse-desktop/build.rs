@@ -7,14 +7,12 @@
 // Declaring them here generates `allow-<command>` / `deny-<command>`, which
 // capabilities/*.json then grant.
 fn main() {
-    tauri_build::try_build(
-        tauri_build::Attributes::new().app_manifest(
-            tauri_build::AppManifest::new().commands(&[
-                "take_launch_files",
-                "read_launch_file",
-                "log_from_webview",
-            ]),
-        ),
-    )
+    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
+        tauri_build::AppManifest::new().commands(&[
+            "take_launch_files",
+            "read_launch_file",
+            "log_from_webview",
+        ]),
+    ))
     .expect("failed to run tauri-build");
 }

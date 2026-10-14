@@ -24,8 +24,16 @@ pub fn init(dir: &Path) -> PathBuf {
     let _ = create_dir_all(dir);
     let _ = std::fs::rename(&path, dir.join("ph-win.log.1"));
 
-    if let Ok(file) = OpenOptions::new().create(true).write(true).truncate(true).open(&path) {
-        let _ = SINK.set(Sink { file: Mutex::new(file), started: Instant::now() });
+    if let Ok(file) = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)
+    {
+        let _ = SINK.set(Sink {
+            file: Mutex::new(file),
+            started: Instant::now(),
+        });
     }
 
     let epoch = SystemTime::now()
@@ -45,7 +53,10 @@ pub fn log(message: impl AsRef<str>) {
         return;
     };
 
-    let line = format!("[{:>8.3}s] {message}\n", sink.started.elapsed().as_secs_f64());
+    let line = format!(
+        "[{:>8.3}s] {message}\n",
+        sink.started.elapsed().as_secs_f64()
+    );
     println!("[ph-win] {message}");
     if let Ok(mut file) = sink.file.lock() {
         let _ = file.write_all(line.as_bytes());

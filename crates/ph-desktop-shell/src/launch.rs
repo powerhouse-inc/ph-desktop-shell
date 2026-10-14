@@ -71,7 +71,7 @@ impl LaunchQueue {
 #[tauri::command]
 pub fn take_launch_files(queue: State<'_, LaunchQueue>) -> Vec<LaunchFileMeta> {
     let mut inner = queue.0.lock().expect("launch queue lock");
-    let pending: Vec<(u64, PathBuf)> = inner.pending.drain(..).collect();
+    let pending: Vec<(u64, PathBuf)> = std::mem::take(&mut inner.pending);
     diag::log(format!("take_launch_files: {} queued", pending.len()));
 
     let mut metas = Vec::with_capacity(pending.len());
@@ -95,7 +95,12 @@ pub fn take_launch_files(queue: State<'_, LaunchQueue>) -> Vec<LaunchFileMeta> {
             "  -> id {id} {name} ({} bytes, mtime {last_modified})",
             meta.len()
         ));
-        metas.push(LaunchFileMeta { id, name, size: meta.len(), last_modified });
+        metas.push(LaunchFileMeta {
+            id,
+            name,
+            size: meta.len(),
+            last_modified,
+        });
         inner.claimed.insert(id, path);
     }
     metas
@@ -115,7 +120,10 @@ pub fn read_launch_file(id: u64, queue: State<'_, LaunchQueue>) -> Result<Respon
 
     match std::fs::read(&path) {
         Ok(bytes) => {
-            diag::log(format!("read_launch_file: id {id} -> {} bytes", bytes.len()));
+            diag::log(format!(
+                "read_launch_file: id {id} -> {} bytes",
+                bytes.len()
+            ));
             Ok(Response::new(bytes))
         }
         Err(error) => {
@@ -140,21 +148,22 @@ where
         .filter(|arg| !arg.as_ref().to_string_lossy().starts_with('-'))
         .map(|arg| {
             let path = PathBuf::from(arg.as_ref());
-            if path.is_absolute() { path } else { cwd.join(path) }
+            if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            }
         })
         .filter(|path| is_associated(path))
         .collect()
 }
 
 fn is_associated(path: &Path) -> bool {
-    let matches_ext = path
-        .extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|ext| {
-            ASSOCIATED_EXTENSIONS
-                .iter()
-                .any(|known| known.eq_ignore_ascii_case(ext))
-        });
+    let matches_ext = path.extension().and_then(OsStr::to_str).is_some_and(|ext| {
+        ASSOCIATED_EXTENSIONS
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(ext))
+    });
     matches_ext && path.is_file()
 }
 
@@ -180,7 +189,10 @@ mod tests {
         let dir = fixture_dir("basic");
         let doc = touch(&dir, "budget.phd");
         // argv[0] is the exe even when it is not a path we would otherwise keep.
-        let args = vec![PathBuf::from("ph-win.exe").into_os_string(), doc.clone().into_os_string()];
+        let args = vec![
+            PathBuf::from("ph-win.exe").into_os_string(),
+            doc.clone().into_os_string(),
+        ];
 
         assert_eq!(paths_from_args(args, &dir), vec![doc]);
     }
@@ -205,7 +217,10 @@ mod tests {
         // A second instance's argv is relative to *its* cwd, not ours.
         let dir = fixture_dir("relative");
         let doc = touch(&dir, "report.phd");
-        let args = vec![std::ffi::OsString::from("ph-win.exe"), std::ffi::OsString::from("report.phd")];
+        let args = vec![
+            std::ffi::OsString::from("ph-win.exe"),
+            std::ffi::OsString::from("report.phd"),
+        ];
 
         assert_eq!(paths_from_args(args, &dir), vec![doc]);
     }
@@ -214,7 +229,10 @@ mod tests {
     fn matches_the_extension_case_insensitively() {
         let dir = fixture_dir("case");
         let doc = touch(&dir, "SHOUTING.PHD");
-        let args = vec![std::ffi::OsString::from("ph-win.exe"), doc.clone().into_os_string()];
+        let args = vec![
+            std::ffi::OsString::from("ph-win.exe"),
+            doc.clone().into_os_string(),
+        ];
 
         assert_eq!(paths_from_args(args, &dir), vec![doc]);
     }
