@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Lets the shell spawn the bundled node sidecar.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-take-launch-files",
+    "allow-read-launch-file",
+    "allow-log-from-webview",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [{ "name": "binaries/node", "sidecar": true, "args": true }]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [{ "name": "binaries/node", "sidecar": true, "args": true }]
+    }
+  ]
+}

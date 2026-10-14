@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ph-win",
+  "version": "0.0.1",
+  "identifier": "inc.powerhouse.phwin",
+  "build": {
+    "frontendDist": "./ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Powerhouse",
+        "width": 1440,
+        "height": 900,
+        "resizable": true,
+        "visible": true,
+        "dragDropEnabled": false,
+        "create": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "fileAssociations": [
+      {
+        "ext": ["phd"],
+        "name": "Powerhouse Document",
+        "description": "Powerhouse Document",
+        "mimeType": "application/vnd.powerhouse.document+zip"
+      }
+    ],
+    "externalBin": ["binaries/node"],
+    "resources": {
+      "./dist-stack": "stack"
+    }
+  }
+}

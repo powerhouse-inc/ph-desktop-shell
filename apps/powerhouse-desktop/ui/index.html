@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Powerhouse</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0; height: 100vh;
+        display: flex; align-items: center; justify-content: center;
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #0f1115; color: #e6e8eb;
+      }
+      .box { text-align: center; }
+      .dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        background: #4ade80; display: inline-block; margin-right: 8px;
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+      @keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
+      code { color: #9aa4b2; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <div class="box">
+      <p><span class="dot"></span>Starting Powerhouse…</p>
+      <p><code id="status">launching sidecar</code></p>
+    </div>
+  </body>
+</html>

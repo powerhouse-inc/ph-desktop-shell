@@ -1,0 +1,14 @@
+# Build output
+target/
+
+# Tauri codegen
+apps/*/gen/
+
+# The stock Node binary shipped as the sidecar (~88 MB) — fetched per
+# platform via scripts/fetch-node.mjs, never committed.
+apps/*/binaries/
+
+# The staged uniform-runners stack (ph run desktop build output); only the
+# README placeholder is tracked so the resources mapping always resolves.
+apps/*/dist-stack/*
+!apps/*/dist-stack/README.md

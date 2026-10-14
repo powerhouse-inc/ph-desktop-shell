@@ -1,0 +1,13 @@
+[package]
+name = "ph-desktop-shell"
+description = "The Powerhouse desktop shell as a library: supervises a project's stack (ph run desktop) and windows Connect. Identity lives in the consuming binary's tauri.conf.json."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tauri = { workspace = true }
+tauri-plugin-shell = { workspace = true }
+tauri-plugin-single-instance = { workspace = true }
+serde = { workspace = true }

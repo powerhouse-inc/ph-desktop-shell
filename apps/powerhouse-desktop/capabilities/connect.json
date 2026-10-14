@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "connect",
+  "description": "Connect is served by the sidecar over http://127.0.0.1, which Tauri treats as a remote origin; without this the launch-queue commands are rejected before they run.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:3101", "http://127.0.0.1:3101/*"]
+  },
+  "permissions": [
+    "allow-take-launch-files",
+    "allow-read-launch-file",
+    "allow-log-from-webview"
+  ]
+}
