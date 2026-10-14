@@ -120,6 +120,12 @@ jobs:
           '
           cargo update -w --offline 2>/dev/null || cargo update -w # refresh Cargo.lock version stamps
 
+      # Before the build: the app crate's tauri-build validates externalBin
+      # (binaries/node-<triple>.exe) at compile time, and the binary is
+      # gitignored — fetch it first, unconditionally.
+      - name: Fetch sidecar node
+        run: node scripts/fetch-node.mjs apps/powerhouse-desktop
+
       - name: Build and test
         run: |
           cargo build --workspace --locked
@@ -149,10 +155,6 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish -p ph-desktop-shell --locked
-
-      - name: Fetch sidecar node
-        if: ${{ inputs.dry_run != true && inputs.skip_installer != true }}
-        run: node scripts/fetch-node.mjs apps/powerhouse-desktop
 
       - name: Build the Powerhouse app installer (NSIS)
         if: ${{ inputs.dry_run != true && inputs.skip_installer != true }}
