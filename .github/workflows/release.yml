@@ -1,0 +1,177 @@
+name: Release
+
+# The shell's equivalent of the monorepo's Release Branch workflow, adapted to
+# a Rust/Tauri repo. One channel per run:
+#   dev        -> next 0.x.y-dev.N      (nightly-grade; GitHub prerelease)
+#   staging    -> next 0.x.y-staging.N  (GitHub prerelease)
+#   production -> an explicit `version` input, no suffix (GitHub release)
+# crates.io has NO dist-tags, so the channel lives in the version suffix;
+# consumers (generated builder shells) pin the suffix they track.
+#
+# Publishing uses crates.io TRUSTED PUBLISHING (OIDC, no long-lived token):
+# register this repo + "release.yml" on the crate's Settings -> Trusted
+# Publishing page once; rust-lang/crates-io-auth-action then exchanges the
+# job's id-token for a 30-minute publish token per run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        type: choice
+        description: "Release channel"
+        options:
+          - dev
+          - staging
+          - production
+        default: dev
+      version:
+        type: string
+        description: "Explicit version (REQUIRED for production, e.g. 0.2.0; ignored for dev/staging, which auto-increment)"
+        default: ""
+      dry_run:
+        type: boolean
+        description: "Build and compute the version, but neither push, publish, nor release"
+        default: false
+      skip_installer:
+        type: boolean
+        description: "Skip the Tauri NSIS build + GitHub Release (crate publish only)"
+        default: false
+  schedule:
+    # Nightly dev release, after the monorepo's 02:00 nightly.
+    - cron: "30 2 * * *"
+
+permissions:
+  contents: write
+  id-token: write
+
+# Serialize releases: two simultaneous runs would race the version bump, the
+# git push, and the crates.io publish. Queue rather than cancel.
+concurrency:
+  group: release-shell-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Version, publish crate, build installer
+    # windows: the only tier-1 shell target today, and the NSIS bundler's home.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full tag history drives the version computation
+
+      - name: Set git config
+        run: |
+          git config user.name "Github Actions Bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compute next version
+        id: version
+        env:
+          CHANNEL: ${{ inputs.channel || 'dev' }}
+          EXPLICIT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          current=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          base=${current%%-*}
+          if [ "$CHANNEL" = "production" ]; then
+            if [ -z "$EXPLICIT" ]; then
+              echo "production requires an explicit version input" >&2
+              exit 1
+            fi
+            next="$EXPLICIT"
+          else
+            # Latest tag of this channel on the same base wins; else start at 1.
+            # A published bare `base` forces a patch bump so prereleases sort
+            # above it (0.1.0 published -> dev releases become 0.1.1-dev.N).
+            if git tag -l "v${base}" | grep -q .; then
+              IFS=. read -r maj min pat <<< "$base"
+              base="${maj}.${min}.$((pat + 1))"
+            fi
+            last=$(git tag -l "v${base}-${CHANNEL}.*" | sed "s/^v${base}-${CHANNEL}\.//" | sort -n | tail -1)
+            next="${base}-${CHANNEL}.$(( ${last:-0} + 1 ))"
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "next version: $next (channel: $CHANNEL)"
+
+      - name: Stamp version (workspace + tauri.conf.json)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
+          # Tauri's Windows bundler needs a numeric x.y.z; prerelease metadata
+          # lives in the crate/tag, not the installer version resource.
+          node -e '
+            const fs = require("fs");
+            const p = "apps/powerhouse-desktop/tauri.conf.json";
+            const conf = JSON.parse(fs.readFileSync(p, "utf8"));
+            conf.version = process.env.VERSION.split("-")[0];
+            fs.writeFileSync(p, JSON.stringify(conf, null, 2) + "\n");
+          '
+          cargo update -w --offline 2>/dev/null || cargo update -w # refresh Cargo.lock version stamps
+
+      - name: Build and test
+        run: |
+          cargo build --workspace --locked
+          cargo test --workspace --locked
+
+      - name: Commit, tag, push the version bump
+        if: ${{ inputs.dry_run != true }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git add Cargo.toml Cargo.lock apps/powerhouse-desktop/tauri.conf.json
+          git commit -m "release: v$VERSION"
+          git tag "v$VERSION"
+          git push origin HEAD --tags
+
+      # Trusted publishing: exchanges this job's OIDC id-token for a short-
+      # lived crates.io token. Requires the crate's Trusted Publishing config
+      # to name this repo and "release.yml".
+      - name: Authenticate with crates.io
+        if: ${{ inputs.dry_run != true }}
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish ph-desktop-shell to crates.io
+        if: ${{ inputs.dry_run != true }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p ph-desktop-shell --locked
+
+      - name: Fetch sidecar node
+        if: ${{ inputs.dry_run != true && inputs.skip_installer != true }}
+        run: node scripts/fetch-node.mjs apps/powerhouse-desktop
+
+      - name: Build the Powerhouse app installer (NSIS)
+        if: ${{ inputs.dry_run != true && inputs.skip_installer != true }}
+        run: |
+          cargo install tauri-cli --version '^2' --locked
+          cd apps/powerhouse-desktop
+          cargo tauri build
+
+      - name: GitHub Release with installer assets
+        if: ${{ inputs.dry_run != true && inputs.skip_installer != true }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          CHANNEL: ${{ steps.version.outputs.channel }}
+        run: |
+          set -euo pipefail
+          prerelease_flag=""
+          if [ "$CHANNEL" != "production" ]; then prerelease_flag="--prerelease"; fi
+          gh release create "v$VERSION" $prerelease_flag \
+            --title "ph-desktop-shell v$VERSION" \
+            --generate-notes \
+            target/release/bundle/nsis/*.exe
