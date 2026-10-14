@@ -14,6 +14,13 @@ the stack answers. One Cargo workspace, two crates:
 
 ## Build
 
+Before pushing, run the CI gate locally — ci.yml runs exactly this script,
+so green here means green there:
+
+```sh
+node scripts/check.mjs
+```
+
 ```sh
 node scripts/fetch-node.mjs apps/powerhouse-desktop   # sidecar node, once
 cargo build -p powerhouse-desktop                     # debug exe
