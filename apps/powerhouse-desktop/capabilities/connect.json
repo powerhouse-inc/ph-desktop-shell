@@ -9,6 +9,7 @@
   "permissions": [
     "allow-take-launch-files",
     "allow-read-launch-file",
-    "allow-log-from-webview"
+    "allow-log-from-webview",
+    "allow-open-external"
   ]
 }
