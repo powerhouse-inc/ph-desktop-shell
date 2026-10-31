@@ -292,6 +292,16 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
                 diag::log(format!("stack setting  : NODE_ENV={mode}"));
                 std::env::set_var("NODE_ENV", mode);
             }
+            if std::env::var_os(settings::URL_SIGNING_SECRET).is_none() {
+                // Its value never goes in the log.
+                match settings::new_url_signing_secret() {
+                    Ok(secret) => {
+                        diag::log("attachment links: signed with a secret for this run");
+                        std::env::set_var(settings::URL_SIGNING_SECRET, secret);
+                    }
+                    Err(error) => diag::log(format!("attachment links: no secret: {error}")),
+                }
+            }
 
             // Built here rather than from tauri.conf.json (`"create": false`)
             // so it can carry an initialization script. `eval` after navigating

@@ -2544,6 +2544,7 @@ name = "ph-desktop-shell"
 version = "0.1.0-dev.18"
 dependencies = [
  "base64 0.22.1",
+ "getrandom 0.3.4",
  "rfd",
  "serde",
  "serde_json",

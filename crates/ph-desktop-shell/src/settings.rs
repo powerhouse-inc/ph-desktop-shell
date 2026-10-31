@@ -229,9 +229,29 @@ pub fn node_env(release: bool, inherited: Option<&str>) -> Option<&'static str> 
     (release && inherited.is_none()).then_some("production")
 }
 
+/// What the switchboard signs attachment download links with.
+pub const URL_SIGNING_SECRET: &str = "PH_ATTACHMENT_URL_SIGNING_SECRET";
+
+/// A secret for one run's download links. Production won't invent its own, as
+/// replicas have to share one, and refuses downloads without it. Here there's
+/// one process, and a link doesn't need to outlive it.
+pub fn new_url_signing_secret() -> Result<String, getrandom::Error> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_run_signs_with_a_secret_of_its_own() {
+        let secret = new_url_signing_secret().unwrap();
+
+        assert_eq!(secret.len(), 64);
+        assert_ne!(secret, new_url_signing_secret().unwrap());
+    }
 
     #[test]
     fn a_release_build_runs_production() {
