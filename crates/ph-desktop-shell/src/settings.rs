@@ -222,9 +222,31 @@ impl Settings {
     }
 }
 
+/// What the stack runs as. A build is one thing throughout: a release build
+/// runs production, and a debug build is left to the dev flow that started it.
+/// The environment still wins.
+pub fn node_env(release: bool, inherited: Option<&str>) -> Option<&'static str> {
+    (release && inherited.is_none()).then_some("production")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_release_build_runs_production() {
+        assert_eq!(node_env(true, None), Some("production"));
+    }
+
+    #[test]
+    fn a_debug_build_stays_dev() {
+        assert_eq!(node_env(false, None), None);
+    }
+
+    #[test]
+    fn the_environment_decides_when_it_says() {
+        assert_eq!(node_env(true, Some("development")), None);
+    }
 
     const GB: u64 = 1024;
 

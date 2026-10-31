@@ -287,6 +287,12 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
                 .unwrap_or_else(|_| app.path().app_data_dir().expect("app data dir").join("logs"));
             let log_path = diag::init(&log_dir);
 
+            let inherited = std::env::var("NODE_ENV").ok();
+            if let Some(mode) = settings::node_env(!cfg!(debug_assertions), inherited.as_deref()) {
+                diag::log(format!("stack setting  : NODE_ENV={mode}"));
+                std::env::set_var("NODE_ENV", mode);
+            }
+
             // Built here rather than from tauri.conf.json (`"create": false`)
             // so it can carry an initialization script. `eval` after navigating
             // would race Connect's mount: if `window.launchQueue` is missing at
