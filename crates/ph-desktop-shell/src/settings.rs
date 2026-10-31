@@ -35,7 +35,6 @@ pub struct Memory {
 #[serde(rename_all = "camelCase", default)]
 pub struct Concurrency {
     pub workflow_runs: Option<u32>,
-    pub reactor_workers: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
@@ -58,13 +57,12 @@ pub struct Window {
     pub close_quits: Option<bool>,
 }
 
-const KNOWN: [&str; 15] = [
+const KNOWN: [&str; 14] = [
     "version",
     "memory.mainMb",
     "memory.workflowWorkerMb",
     "memory.pgliteWorkerMb",
     "concurrency.workflowRuns",
-    "concurrency.reactorWorkers",
     "renown.url",
     "renown.switchboardUrl",
     "registryUrl",
@@ -187,10 +185,6 @@ impl Settings {
             "PH_WORKFLOWS_RUN_CONCURRENCY",
             self.concurrency.workflow_runs.map(|n| n.to_string()),
         );
-        set(
-            "REACTOR_WORKERS",
-            self.concurrency.reactor_workers.map(|n| n.to_string()),
-        );
         set("RENOWN_URL", self.renown.url.clone());
         set("SWITCHBOARD_URL", self.renown.switchboard_url.clone());
         set("PH_REGISTRY_URL", self.registry_url.clone());
@@ -298,7 +292,7 @@ mod tests {
         let settings = parsed(
             r#"{
               "memory": { "mainMb": 3000, "workflowWorkerMb": 1500, "pgliteWorkerMb": 700 },
-              "concurrency": { "workflowRuns": 2, "reactorWorkers": 3 },
+              "concurrency": { "workflowRuns": 2 },
               "renown": { "url": "https://r.test", "switchboardUrl": "https://s.test/graphql" },
               "registryUrl": "https://registry.test",
               "logLevel": "debug"
@@ -313,7 +307,6 @@ mod tests {
         assert_eq!(value(&env, "PH_WORKFLOWS_WORKER_MEMORY_MB"), Some("1500"));
         assert_eq!(value(&env, "PH_PGLITE_WORKER_MEMORY_MB"), Some("700"));
         assert_eq!(value(&env, "PH_WORKFLOWS_RUN_CONCURRENCY"), Some("2"));
-        assert_eq!(value(&env, "REACTOR_WORKERS"), Some("3"));
         assert_eq!(value(&env, "RENOWN_URL"), Some("https://r.test"));
         assert_eq!(
             value(&env, "SWITCHBOARD_URL"),
@@ -324,6 +317,14 @@ mod tests {
             Some("https://registry.test")
         );
         assert_eq!(value(&env, "LOG_LEVEL"), Some("debug"));
+    }
+
+    /// They need Postgres, so on this embedded database the stack wouldn't start.
+    #[test]
+    fn worker_pools_cant_be_asked_for() {
+        let env = env_of(&parsed(r#"{"concurrency":{"reactorWorkers":3}}"#), 16 * GB);
+
+        assert_eq!(value(&env, "REACTOR_WORKERS"), None);
     }
 
     #[test]
