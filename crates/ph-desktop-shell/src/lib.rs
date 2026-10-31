@@ -10,6 +10,7 @@
 // points the webview at Connect once the stack answers on its port.
 
 pub mod diag;
+pub mod external;
 pub mod launch;
 
 use std::path::{Path, PathBuf};
@@ -196,7 +197,8 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
         .invoke_handler(tauri::generate_handler![
             launch::take_launch_files,
             launch::read_launch_file,
-            diag::log_from_webview
+            diag::log_from_webview,
+            external::open_external
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -217,6 +219,7 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
             let window_config = app.config().app.windows[0].clone();
             let window = tauri::WebviewWindowBuilder::from_config(&handle, &window_config)?
                 .initialization_script(include_str!("launch-queue.js"))
+                .initialization_script(include_str!("desktop-bridge.js"))
                 .build()?;
 
             // Devtools are compiled in (the `devtools` feature; a release build
