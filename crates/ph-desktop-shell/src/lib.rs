@@ -11,10 +11,16 @@
 
 pub mod diag;
 pub mod external;
+pub mod gate;
+pub mod identity;
 pub mod launch;
+pub mod root;
+pub mod serve;
+pub mod settings;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem};
@@ -125,22 +131,44 @@ fn connect_port(default: u16) -> u16 {
 
 /// Holds the sidecar so it can be killed on exit; Tauri does not reap it for us.
 #[derive(Default)]
-struct Sidecar(Mutex<Option<CommandChild>>);
+pub(crate) struct Sidecar(Mutex<Option<CommandChild>>);
 
 impl Sidecar {
-    fn kill(&self) {
+    pub(crate) fn hold(&self, child: CommandChild) {
+        if let Ok(mut guard) = self.0.lock() {
+            guard.replace(child);
+        }
+    }
+
+    pub(crate) fn kill(&self) {
         if let Ok(mut guard) = self.0.lock() {
             if let Some(child) = guard.take() {
+                kill_children(child.pid());
                 let _ = child.kill();
             }
         }
     }
 }
 
+/// The stack runs workers of its own, and on Windows killing a process leaves
+/// its children running: they'd keep the ports and the store's locks.
+#[cfg(windows)]
+fn kill_children(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
+#[cfg(not(windows))]
+fn kill_children(_pid: u32) {}
+
 /// Tauri hands back extended-length paths (`\\?\D:\...`) on Windows. Node cannot
 /// resolve a main module from one: it splits on the prefix and lstats "D:",
 /// failing with EISDIR. Strip it before handing a path to the sidecar.
-fn plain_path(path: &std::path::Path) -> String {
+pub(crate) fn plain_path(path: &std::path::Path) -> String {
     let s = path.to_string_lossy().to_string();
     s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
 }
@@ -148,9 +176,14 @@ fn plain_path(path: &std::path::Path) -> String {
 /// The sidecar binds Connect only after Switchboard has booted, so a successful
 /// TCP connect is a sufficient readiness signal.
 fn wait_for_port(port: u16, timeout: Duration) -> bool {
+    wait_for_port_while(port, timeout, &AtomicBool::new(true))
+}
+
+/// As `wait_for_port`, giving up as soon as `alive` goes false.
+pub(crate) fn wait_for_port_while(port: u16, timeout: Duration, alive: &AtomicBool) -> bool {
     let addr = format!("127.0.0.1:{port}");
     let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && alive.load(Ordering::Relaxed) {
         if std::net::TcpStream::connect_timeout(
             &addr.parse().expect("valid loopback addr"),
             Duration::from_millis(500),
@@ -162,6 +195,39 @@ fn wait_for_port(port: u16, timeout: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(400));
     }
     false
+}
+
+/// Tray: closing the window leaves the service running. Labels carry the
+/// caller's product name — a builder's identity with no Rust.
+fn add_tray(app: &tauri::App, product_name: &str) -> tauri::Result<()> {
+    let open = MenuItem::with_id(
+        app,
+        "open",
+        format!("Open {product_name}"),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    TrayIconBuilder::new()
+        .icon(app.default_window_icon().unwrap().clone())
+        .tooltip(product_name)
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            "quit" => {
+                app.state::<Sidecar>().kill();
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .build(app)?;
+    Ok(())
 }
 
 /// Build and run the shell around the caller's identity. `context` must come
@@ -198,7 +264,17 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
             launch::take_launch_files,
             launch::read_launch_file,
             diag::log_from_webview,
-            external::open_external
+            external::open_external,
+            gate::desktop_state,
+            gate::pick_root,
+            gate::save_renown_url,
+            gate::local_create,
+            gate::local_unlock,
+            gate::saved_credential,
+            gate::save_profile,
+            gate::adopt_old_data,
+            gate::start_stack,
+            gate::switch_identity
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -243,6 +319,41 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
             }
             app.state::<LaunchQueue>().push(launched);
 
+            // Env wins (dev flows wire it); then the bundled stack resource
+            // (the packaged-app path); then the legacy sidecar.
+            let mut mode = supervised_mode();
+            if matches!(mode, Supervised::Legacy) {
+                if let Ok(resource_dir) = app.path().resource_dir() {
+                    if let Some(stack_mode) = bundled_stack(&resource_dir) {
+                        std::env::set_var("FEATURE_UNIFORM_RUNNERS_ENABLED", "1");
+                        mode = stack_mode;
+                    }
+                }
+            }
+            let port = connect_port(options.default_connect_port);
+
+            // A sign-in page in the app means nothing starts until someone has
+            // used it: who signs in decides the folder and the admin.
+            if let Supervised::UniformRunners { project, cli } = &mode {
+                if app.asset_resolver().get(serve::SIGN_IN_PAGE.to_string()).is_some() {
+                    diag::log(format!("log file       : {}", log_path.display()));
+                    diag::log(format!("connect port   : {port}"));
+                    let gate = Arc::new(gate::Gate::new(gate::GateConfig {
+                        app_name: product_name.clone(),
+                        config_dir: app.path().app_config_dir().expect("app config dir"),
+                        default_root: app.path().app_data_dir().expect("app data dir"),
+                        project: project.clone(),
+                        cli: cli.clone(),
+                        port,
+                        ready_timeout: options.ready_timeout,
+                    }));
+                    app.manage(gate.clone());
+                    gate.open_sign_in(&handle).map_err(std::io::Error::other)?;
+                    add_tray(app, &product_name)?;
+                    return Ok(());
+                }
+            }
+
             // PGlite must write to a per-user location; the resource dir is
             // read-only once installed under Program Files. An inherited
             // PH_WIN_DATA_DIR wins, so a test run can be pointed at a scratch
@@ -257,19 +368,6 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
                     .join("pglite"),
             };
             std::fs::create_dir_all(&data_dir)?;
-
-            // Env wins (dev flows wire it); then the bundled stack resource
-            // (the packaged-app path); then the legacy sidecar.
-            let mut mode = supervised_mode();
-            if matches!(mode, Supervised::Legacy) {
-                if let Ok(resource_dir) = app.path().resource_dir() {
-                    if let Some(stack_mode) = bundled_stack(&resource_dir) {
-                        std::env::set_var("FEATURE_UNIFORM_RUNNERS_ENABLED", "1");
-                        mode = stack_mode;
-                    }
-                }
-            }
-            let port = connect_port(options.default_connect_port);
 
             diag::log(format!("log file       : {}", log_path.display()));
             diag::log(format!("devtools       : {}", if devtools { "open" } else { "off (PH_WIN_DEVTOOLS=1)" }));
@@ -357,35 +455,7 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
                 }
             });
 
-            // Tray: closing the window leaves the service running. Labels carry
-            // the caller's product name — a builder's identity with no Rust.
-            let open = MenuItem::with_id(
-                app,
-                "open",
-                format!("Open {product_name}"),
-                true,
-                None::<&str>,
-            )?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
-            TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
-                .tooltip(&product_name)
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "open" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
-                    "quit" => {
-                        app.state::<Sidecar>().kill();
-                        app.exit(0);
-                    }
-                    _ => {}
-                })
-                .build(app)?;
+            add_tray(app, &product_name)?;
 
             // Navigate off the loading page once the supervised stack answers.
             let ready_timeout = options.ready_timeout;
@@ -411,8 +481,18 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Close hides to tray rather than quitting, so the service survives.
+            // Close hides to tray rather than quitting, so the service survives,
+            // unless there's nothing to keep running or the person asked.
             if let WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                let ends = app
+                    .try_state::<Arc<gate::Gate>>()
+                    .is_some_and(|gate| gate.close_ends_the_app());
+                if ends {
+                    app.state::<Sidecar>().kill();
+                    app.exit(0);
+                    return;
+                }
                 api.prevent_close();
                 let _ = window.hide();
             }

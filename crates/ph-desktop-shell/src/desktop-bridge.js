@@ -5,5 +5,7 @@
   window.phDesktop = {
     openExternal: (url) =>
       window.__TAURI_INTERNALS__.invoke("open_external", { url }),
+    switchIdentity: () =>
+      window.__TAURI_INTERNALS__.invoke("switch_identity"),
   };
 })();
