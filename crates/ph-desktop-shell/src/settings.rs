@@ -201,10 +201,15 @@ impl Settings {
                 .filter(|on| !on)
                 .map(|_| "false".to_string()),
         );
+        // PH_TELEMETRY can only stop what's on. It's PH_MEMORY_TELEMETRY that writes.
         let diagnostics = self.telemetry.diagnostics.unwrap_or(true);
         set(
             "PH_TELEMETRY",
             Some(if diagnostics { "on" } else { "off" }.to_string()),
+        );
+        set(
+            "PH_MEMORY_TELEMETRY",
+            diagnostics.then(|| "on".to_string()),
         );
         if !self.telemetry.error_reports.unwrap_or(false) {
             set("PH_NO_TELEMETRY", Some("1".to_string()));
@@ -340,6 +345,7 @@ mod tests {
         let env = env_of(&Settings::default(), 16 * GB);
 
         assert_eq!(value(&env, "PH_TELEMETRY"), Some("on"));
+        assert_eq!(value(&env, "PH_MEMORY_TELEMETRY"), Some("on"));
         assert_eq!(value(&env, "PH_NO_TELEMETRY"), Some("1"));
         assert_eq!(value(&env, "DO_NOT_TRACK"), Some("1"));
     }
@@ -349,6 +355,7 @@ mod tests {
         let env = env_of(&parsed(r#"{"telemetry":{"diagnostics":false}}"#), 16 * GB);
 
         assert_eq!(value(&env, "PH_TELEMETRY"), Some("off"));
+        assert_eq!(value(&env, "PH_MEMORY_TELEMETRY"), None);
     }
 
     #[test]
