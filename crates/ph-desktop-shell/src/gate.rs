@@ -302,14 +302,18 @@ fn apply_env(settings: &Settings, folder: &Path, admin: &str, local: bool) {
         );
         system.total_memory() / (1024 * 1024)
     };
+    // Logged, as support will ask: nothing here is a secret.
     for (name, value) in settings.stack_env(ram_mb, &|name| std::env::var(name).ok()) {
+        diag::log(format!("stack setting  : {name}={value}"));
         std::env::set_var(name, value);
     }
     std::env::set_var("FEATURE_UNIFORM_RUNNERS_ENABLED", "1");
     std::env::set_var("PH_USER_DATA_DIR", plain_path(folder));
+    diag::log(format!("stack setting  : ADMINS={admin}"));
     std::env::set_var("ADMINS", admin);
     // A local key's credential is at no Renown: only what's kept here counts.
     if local {
+        diag::log("stack setting  : RENOWN_SOURCE=kept");
         std::env::set_var("RENOWN_SOURCE", "kept");
     } else {
         std::env::remove_var("RENOWN_SOURCE");
