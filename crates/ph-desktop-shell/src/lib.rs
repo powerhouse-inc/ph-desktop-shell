@@ -20,7 +20,7 @@ pub mod settings;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem};
@@ -129,41 +129,154 @@ fn connect_port(default: u16) -> u16 {
         .unwrap_or(default)
 }
 
-/// Holds the sidecar so it can be killed on exit; Tauri does not reap it for us.
+/// How long the stack gets to close its stores before it's ended regardless.
+const STOP_LIMIT: Duration = Duration::from_secs(10);
+
+/// Goes true once the stack has gone, by whoever reads its events.
+#[derive(Clone, Default)]
+pub(crate) struct Exited(Arc<(Mutex<bool>, Condvar)>);
+
+impl Exited {
+    pub(crate) fn mark(&self) {
+        let (gone, changed) = &*self.0;
+        *gone.lock().expect("exited lock") = true;
+        changed.notify_all();
+    }
+
+    fn wait(&self, limit: Duration) -> bool {
+        let (gone, changed) = &*self.0;
+        let guard = gone.lock().expect("exited lock");
+        let (guard, _) = changed
+            .wait_timeout_while(guard, limit, |gone| !*gone)
+            .expect("exited lock");
+        *guard
+    }
+}
+
+struct Held {
+    child: CommandChild,
+    /// Set for a stack that stops when asked; a legacy sidecar can't.
+    exited: Option<Exited>,
+}
+
+/// Holds the sidecar so it can be stopped on exit; Tauri does not reap it for us.
 #[derive(Default)]
-pub(crate) struct Sidecar(Mutex<Option<CommandChild>>);
+pub(crate) struct Sidecar {
+    held: Mutex<Option<Held>>,
+    quitting: AtomicBool,
+}
 
 impl Sidecar {
-    pub(crate) fn hold(&self, child: CommandChild) {
-        if let Ok(mut guard) = self.0.lock() {
-            guard.replace(child);
+    fn hold(&self, held: Held) {
+        if let Ok(mut guard) = self.held.lock() {
+            guard.replace(held);
         }
     }
 
+    /// Holds a stack from `stack_command`. Whoever reads its events marks what
+    /// this returns when it terminates.
+    pub(crate) fn hold_stack(&self, child: CommandChild) -> Exited {
+        let exited = Exited::default();
+        self.hold(Held {
+            child,
+            exited: Some(exited.clone()),
+        });
+        exited
+    }
+
+    fn holds_anything(&self) -> bool {
+        self.held.lock().is_ok_and(|held| held.is_some())
+    }
+
+    /// Ends the stack at once, with everything it started. Its stores are left
+    /// for crash recovery, so this is for a stack that isn't working.
     pub(crate) fn kill(&self) {
-        if let Ok(mut guard) = self.0.lock() {
-            if let Some(child) = guard.take() {
-                kill_children(child.pid());
-                let _ = child.kill();
-            }
+        if let Some(held) = self.held.lock().ok().and_then(|mut guard| guard.take()) {
+            let _ = held.child.kill();
         }
+    }
+
+    /// Asks the stack to stop, so that it closes its stores and the next start
+    /// has nothing to recover, and ends it if that takes too long. It may wait
+    /// that long, so don't call this on the main thread while the window's up.
+    pub(crate) fn stop(&self) {
+        let Some(mut held) = self.held.lock().ok().and_then(|mut guard| guard.take()) else {
+            return;
+        };
+        if let Some(exited) = held.exited.take() {
+            let asked = Instant::now();
+            let stopped = held.child.write(b"stop\n").is_ok() && exited.wait(STOP_LIMIT);
+            diag::log(format!(
+                "stack {} after {} ms",
+                if stopped {
+                    "stopped"
+                } else {
+                    "didn't stop, ending it"
+                },
+                asked.elapsed().as_millis()
+            ));
+        }
+        // Whatever it left behind goes with the job, such as a piece's worker.
+        let _ = held.child.kill();
     }
 }
 
-/// The stack runs workers of its own, and on Windows killing a process leaves
-/// its children running: they'd keep the ports and the store's locks.
-#[cfg(windows)]
-fn kill_children(pid: u32) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status();
+/// `ph run desktop` in a job of its own, so ending it ends what it forked,
+/// and set to stop when asked on its stdin, as Windows has no SIGTERM. Closing
+/// stdin works too, which is what happens if this process dies.
+pub(crate) fn stack_command(
+    app: &tauri::AppHandle,
+    cli: &Path,
+    project: &Path,
+) -> Result<tauri_plugin_shell::process::Command, tauri_plugin_shell::Error> {
+    Ok(app
+        .shell()
+        .sidecar("node")?
+        .args([plain_path(cli), "run".into(), "desktop".into()])
+        // plain_path on the cwd too: ph-cli takes projectRoot from cwd, and a
+        // `\\?\` prefix leaks into storage paths where PGlite's fsync fails
+        // with EPERM.
+        .current_dir(PathBuf::from(plain_path(project)))
+        .env("PH_STOP_ON_STDIN", "1")
+        .set_process_group(true))
 }
 
-#[cfg(not(windows))]
-fn kill_children(_pid: u32) {}
+/// Tells whoever's looking why the page has stopped working.
+pub(crate) fn show_closing(app: &tauri::AppHandle, product_name: &str) {
+    if !app.state::<Sidecar>().holds_anything() {
+        return;
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let text = serde_json::json!(format!("Closing {product_name}\u{2026}"));
+        let _ = window.eval(format!(
+            "{{const closing=document.createElement('div');\
+             closing.setAttribute('role','status');\
+             closing.textContent={text};\
+             closing.style.cssText='position:fixed;inset:0;z-index:2147483647;\
+             display:flex;align-items:center;justify-content:center;\
+             background:Canvas;color:CanvasText;font:15px system-ui,sans-serif';\
+             document.body.append(closing);}}"
+        ));
+    }
+}
+
+/// Stops the stack, then ends the app. The window stays up meanwhile, as it
+/// can take seconds, and a second quit changes nothing.
+fn quit(app: &tauri::AppHandle, product_name: &str) {
+    if app
+        .state::<Sidecar>()
+        .quitting
+        .swap(true, Ordering::Relaxed)
+    {
+        return;
+    }
+    show_closing(app, product_name);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        app.state::<Sidecar>().stop();
+        app.exit(0);
+    });
+}
 
 /// Tauri hands back extended-length paths (`\\?\D:\...`) on Windows. Node cannot
 /// resolve a main module from one: it splits on the prefix and lstats "D:",
@@ -207,23 +320,21 @@ fn add_tray(app: &tauri::App, product_name: &str) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit_item])?;
+    let product = product_name.to_string();
     TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip(product_name)
         .menu(&menu)
-        .on_menu_event(|app, event| match event.id().as_ref() {
+        .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
             }
-            "quit" => {
-                app.state::<Sidecar>().kill();
-                app.exit(0);
-            }
+            "quit" => quit(app, &product),
             _ => {}
         })
         .build(app)?;
@@ -241,6 +352,7 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
         .product_name
         .clone()
         .unwrap_or_else(|| "Powerhouse".to_string());
+    let product_on_close = product_name.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -390,7 +502,8 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
             diag::log(format!("data dir       : {}", plain_path(&data_dir)));
             diag::log(format!("connect port   : {port}"));
 
-            let (mut rx, child) = match &mode {
+            let exited = Exited::default();
+            let (mut rx, held) = match &mode {
                 Supervised::Legacy => {
                     let entry = app
                         .path()
@@ -417,12 +530,14 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
                     );
                     diag::log(format!("sidecar entry  : {}", plain_path(&entry)));
 
-                    app.shell()
+                    let (rx, child) = app
+                        .shell()
                         .sidecar("node")
                         .expect("sidecar 'node' is declared in externalBin")
                         .args([plain_path(&entry)])
                         .spawn()
-                        .expect("failed to spawn node sidecar")
+                        .expect("failed to spawn node sidecar");
+                    (rx, Held { child, exited: None })
                 }
                 Supervised::UniformRunners { project, cli } => {
                     // `ph run desktop`: the compound reads ports from the
@@ -437,20 +552,21 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
                     diag::log(format!("run project    : {}", plain_path(project)));
                     diag::log(format!("ph-cli         : {}", plain_path(cli)));
 
-                    app.shell()
-                        .sidecar("node")
+                    let (rx, child) = stack_command(&handle, cli, project)
                         .expect("sidecar 'node' is declared in externalBin")
-                        .args([plain_path(cli), "run".into(), "desktop".into()])
-                        // plain_path on the cwd too: ph-cli takes projectRoot
-                        // from cwd, and a `\\?\` prefix leaks into storage
-                        // paths where PGlite's fsync fails with EPERM.
-                        .current_dir(PathBuf::from(plain_path(project)))
                         .spawn()
-                        .expect("failed to spawn ph run desktop")
+                        .expect("failed to spawn ph run desktop");
+                    (
+                        rx,
+                        Held {
+                            child,
+                            exited: Some(exited.clone()),
+                        },
+                    )
                 }
             };
 
-            app.state::<Sidecar>().0.lock().unwrap().replace(child);
+            app.state::<Sidecar>().hold(held);
 
             // Surface sidecar output in the console; this is the first thing
             // support will ask for.
@@ -465,6 +581,7 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
                         }
                         CommandEvent::Terminated(payload) => {
                             diag::log(format!("sidecar exited: {:?}", payload.code));
+                            exited.mark();
                         }
                         _ => {}
                     }
@@ -496,7 +613,7 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(move |window, event| {
             // Close hides to tray rather than quitting, so the service survives,
             // unless there's nothing to keep running or the person asked.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -504,20 +621,53 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
                 let ends = app
                     .try_state::<Arc<gate::Gate>>()
                     .is_some_and(|gate| gate.close_ends_the_app());
-                if ends {
-                    app.state::<Sidecar>().kill();
-                    app.exit(0);
-                    return;
-                }
                 api.prevent_close();
-                let _ = window.hide();
+                if ends {
+                    quit(app, &product_on_close);
+                } else {
+                    let _ = window.hide();
+                }
             }
         })
         .build(context)
         .expect("error building the desktop shell")
         .run(|app, event| {
+            // Past `quit`, as when Windows is shutting down: nothing's left to
+            // hold the window for, so waiting here does no harm.
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
-                app.state::<Sidecar>().kill();
+                app.state::<Sidecar>().stop();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stack_that_went_needs_no_waiting_for() {
+        let exited = Exited::default();
+        exited.mark();
+        let started = Instant::now();
+        assert!(exited.wait(Duration::from_secs(30)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn waiting_ends_as_soon_as_the_stack_goes() {
+        let exited = Exited::default();
+        let marks = exited.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            marks.mark();
+        });
+        assert!(exited.wait(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn a_stack_that_stays_is_given_up_on_at_the_limit() {
+        let started = Instant::now();
+        assert!(!Exited::default().wait(Duration::from_millis(30)));
+        assert!(started.elapsed() >= Duration::from_millis(30));
+    }
 }

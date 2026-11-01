@@ -19,7 +19,7 @@ use crate::identity::{self, Identity, LOCAL, LOCAL_KEY_FILE};
 use crate::root::{self, Root, RootSource};
 use crate::serve::{SignInServer, SIGN_IN_PAGE};
 use crate::settings::{self, Settings};
-use crate::{diag, plain_path, wait_for_port_while, Sidecar};
+use crate::{diag, plain_path, show_closing, stack_command, wait_for_port_while, Sidecar};
 
 const OFFICIAL_RENOWN: &str = "https://www.renown.id";
 const CHAIN_ID: u64 = 1;
@@ -218,16 +218,11 @@ impl Gate {
         std::fs::create_dir_all(folder.join("backups")).map_err(|error| error.to_string())?;
         diag::log(format!("identity folder: {}", plain_path(folder)));
 
-        let sidecar = app
-            .shell()
-            .sidecar("node")
-            .map_err(|error| error.to_string())?;
-        let (mut events, child) = sidecar
-            .args([plain_path(&self.cli), "run".into(), "desktop".into()])
-            .current_dir(PathBuf::from(plain_path(&self.project)))
+        let (mut events, child) = stack_command(app, &self.cli, &self.project)
+            .map_err(|error| error.to_string())?
             .spawn()
             .map_err(|error| error.to_string())?;
-        app.state::<Sidecar>().hold(child);
+        let exited = app.state::<Sidecar>().hold_stack(child);
 
         let alive = Arc::new(AtomicBool::new(true));
         let still_alive = alive.clone();
@@ -243,6 +238,7 @@ impl Gate {
                     CommandEvent::Terminated(payload) => {
                         diag::log(format!("sidecar exited: {:?}", payload.code));
                         still_alive.store(false, Ordering::Relaxed);
+                        exited.mark();
                     }
                     _ => {}
                 }
@@ -483,10 +479,12 @@ pub fn start_stack(
     gate.start(&app, &folder, &admin, local)
 }
 
-/// Stops the stack and goes back to the sign-in page.
-#[tauri::command]
+/// Stops the stack and goes back to the sign-in page. Off the main thread, as
+/// the stack can take seconds and the window has to say so meanwhile.
+#[tauri::command(async)]
 pub fn switch_identity(app: AppHandle, gate: State<'_, Arc<Gate>>) -> Result<(), String> {
-    app.state::<Sidecar>().kill();
+    show_closing(&app, &gate.app_name);
+    app.state::<Sidecar>().stop();
     let addr = format!("127.0.0.1:{}", gate.port);
     let addr: std::net::SocketAddr = addr.parse().map_err(|_| "bad address")?;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
