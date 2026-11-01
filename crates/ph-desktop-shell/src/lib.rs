@@ -68,17 +68,23 @@ enum Supervised {
 
 /// The packaged-app path (uniform-runners phase 6): a staged stack bundled as
 /// a resource (`resources/stack`: hosts/, powerhouse.config.json, the built
-/// Connect, and a VENDORED @powerhousedao/ph-cli) makes the installed app run
-/// `ph run desktop` with no environment at all. Staged by
-/// `@powerhousedao/desktop`'s `build` verb (bundle-stack).
+/// Connect, and a VENDORED @powerhousedao/ph-run, or ph-cli in a stack from
+/// before that) makes the installed app run `ph run desktop` with no
+/// environment at all. Staged by `@powerhousedao/desktop`'s `build` verb
+/// (bundle-stack).
 fn bundled_stack(resource_dir: &Path) -> Option<Supervised> {
     let stack = resource_dir.join("stack");
-    let cli = stack
-        .join("node_modules")
-        .join("@powerhousedao")
-        .join("ph-cli")
-        .join("dist")
-        .join("cli.mjs");
+    let cli_of = |package: &str| {
+        stack
+            .join("node_modules")
+            .join("@powerhousedao")
+            .join(package)
+            .join("dist")
+            .join("cli.mjs")
+    };
+    let cli = Some(cli_of("ph-run"))
+        .filter(|cli| cli.is_file())
+        .unwrap_or_else(|| cli_of("ph-cli"));
     if stack.join("hosts").is_dir() && cli.is_file() {
         // shell.json is the stack's contract with this shell: in the no-env
         // (packaged) path nobody sets PH_WIN_CONNECT_PORT, so the probe and
