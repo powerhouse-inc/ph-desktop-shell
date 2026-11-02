@@ -201,10 +201,7 @@ impl Settings {
             "PH_TELEMETRY",
             Some(if diagnostics { "on" } else { "off" }.to_string()),
         );
-        set(
-            "PH_MEMORY_TELEMETRY",
-            diagnostics.then(|| "on".to_string()),
-        );
+        set("PH_MEMORY_TELEMETRY", diagnostics.then(|| "on".to_string()));
         if !self.telemetry.error_reports.unwrap_or(false) {
             set("PH_NO_TELEMETRY", Some("1".to_string()));
             set("DO_NOT_TRACK", Some("1".to_string()));
