@@ -637,12 +637,24 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
         })
         .build(context)
         .expect("error building the desktop shell")
-        .run(|app, event| {
+        .run(|app, event| match event {
             // Past `quit`, as when Windows is shutting down: nothing's left to
             // hold the window for, so waiting here does no harm.
-            if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
+            RunEvent::ExitRequested { .. } | RunEvent::Exit => {
                 app.state::<Sidecar>().stop();
             }
+            // macOS: clicking the Dock icon (or opening the app again from
+            // Finder or Spotlight) after closing the window. Closing hides it,
+            // so without this the app keeps running with nothing to show, and
+            // only the menu-bar icon brings it back.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            _ => {}
         });
 }
 
