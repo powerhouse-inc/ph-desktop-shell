@@ -17,6 +17,7 @@ pub mod launch;
 pub mod root;
 pub mod serve;
 pub mod settings;
+pub mod update;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -360,7 +361,15 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
         .unwrap_or_else(|| "Powerhouse".to_string());
     let product_on_close = product_name.clone();
 
-    tauri::Builder::default()
+    // Updates are the app's choice: only one whose configuration names a
+    // release feed gets the updater (it refuses to start without one).
+    let updates = update::configured(context.config());
+    let mut builder = tauri::Builder::default();
+    if updates {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             // Opening a second `.phd` while we are running: the OS starts
@@ -378,6 +387,7 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
         }))
         .manage(Sidecar::default())
         .manage(LaunchQueue::default())
+        .manage(update::Updates::default())
         .invoke_handler(tauri::generate_handler![
             launch::take_launch_files,
             launch::read_launch_file,
@@ -392,7 +402,10 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
             gate::save_profile,
             gate::adopt_old_data,
             gate::start_stack,
-            gate::switch_identity
+            gate::switch_identity,
+            update::update_state,
+            update::update_check,
+            update::update_install
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -430,7 +443,12 @@ pub fn run(context: tauri::Context, options: ShellOptions) {
             let window = tauri::WebviewWindowBuilder::from_config(&handle, &window_config)?
                 .initialization_script(include_str!("launch-queue.js"))
                 .initialization_script(include_str!("desktop-bridge.js"))
+                .initialization_script(include_str!("update-notice.js"))
                 .build()?;
+
+            if updates {
+                update::watch(&handle);
+            }
 
             // Devtools are compiled in (the `devtools` feature; a release build
             // has debug_assertions off) but only opened on request, so a normal

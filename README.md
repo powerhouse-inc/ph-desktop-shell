@@ -35,3 +35,32 @@ env (dev flows, wired by `@powerhousedao/desktop`'s runner) → bundled
 
 Diagnostics land in the app log dir (`ph-win.log`); `PH_WIN_DEVTOOLS=1`
 opens the webview devtools at startup.
+
+## Updates
+
+An app opts in by carrying `plugins.updater` in its `tauri.conf.json`: a
+release feed and the public key its releases are signed with (`ph generate
+desktop-shell` projects app.json's `updates` there). Without it the updater is
+not loaded and nothing changes.
+
+With it the shell asks the feed 20 seconds after start and every four hours. A
+newer version drops a notice into the window (`update-notice.js`, injected into
+every page, so no app has to draw it): **Update now** downloads the release,
+checks its signature, installs it (the setup program on Windows, the bundle on
+macOS, the AppImage, .deb or .rpm on Linux), stops the stack and starts the new
+version. A step that fails leaves the running app as it was and says so in the
+notice; a check that fails is only logged.
+
+A page can read the same state and draw the notice itself:
+`window.phDesktop.update` has `state()`, `check()`, `install()`,
+`subscribe(fn)` and `takeOver()`. The commands behind it (`update_state`,
+`update_check`, `update_install`) need a grant in `capabilities/` like the
+others; an app without updates answers `enabled: false`.
+
+On Windows the setup program ends the app, and the stack is stopped first. On
+macOS and Linux the files are replaced under the running app and the stack is
+stopped right after, before the restart.
+
+For a test run, `PH_UPDATE_FIRST_CHECK_SECS` and `PH_UPDATE_CHECK_EVERY_SECS`
+move the checks, and `PH_UPDATE_AUTO_INSTALL=1` installs what a check finds
+without the asking.

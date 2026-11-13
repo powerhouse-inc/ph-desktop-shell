@@ -8,6 +8,9 @@
     "allow-take-launch-files",
     "allow-read-launch-file",
     "allow-log-from-webview",
+    "allow-update-state",
+    "allow-update-check",
+    "allow-update-install",
     {
       "identifier": "shell:allow-spawn",
       "allow": [{ "name": "binaries/node", "sidecar": true, "args": true }]
