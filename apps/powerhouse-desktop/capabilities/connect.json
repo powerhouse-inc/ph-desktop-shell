@@ -10,6 +10,9 @@
     "allow-take-launch-files",
     "allow-read-launch-file",
     "allow-log-from-webview",
-    "allow-open-external"
+    "allow-open-external",
+    "allow-update-state",
+    "allow-update-check",
+    "allow-update-install"
   ]
 }

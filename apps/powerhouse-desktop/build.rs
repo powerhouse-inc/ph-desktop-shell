@@ -13,6 +13,9 @@ fn main() {
             "read_launch_file",
             "log_from_webview",
             "open_external",
+            "update_state",
+            "update_check",
+            "update_install",
         ]),
     ))
     .expect("failed to run tauri-build");
